@@ -1,0 +1,23 @@
+{
+  "network": "testnet",
+  "chainId": "1114",
+  "contractAddress": "0x9807Ae60581B38611534d656f6a16AF28B846E17",
+  "deployer": "0xa0a9579D2F7b201cF2C09C09bE8B6D230b198c13",
+  "txHash": "0xf3a4f6a6a6ec5d22275f29d7fcc2ecdfc61c0e37249eb294fa8dacbdc5c323e3",
+  "deployedAt": "2026-02-21T09:35:23.118Z",
+  "rpc": "https://rpc.test2.btcs.network",
+  "explorer": "https://scan.test2.btcs.network/address/0x9807Ae60581B38611534d656f6a16AF28B846E17",
+  "txExplorer": "https://scan.test2.btcs.network/tx/0xf3a4f6a6a6ec5d22275f29d7fcc2ecdfc61c0e37249eb294fa8dacbdc5c323e3",
+  "functions": [
+    "logThreat(hash, prediction, score, riskLevel, fileName, topFeature)",
+    "logThreatSimple(hash, prediction, score)",
+    "verifyHash(hash) → bool",
+    "getThreatByHash(hash) → ThreatEntry",
+    "getThreatById(id) → ThreatEntry",
+    "getStats() → (total, highRisk, resolved, active)",
+    "getRecentThreats(count) → ThreatEntry[]",
+    "resolveThreat(hash)",
+    "quarantineThreat(hash)",
+    "authorizeReporter(address)"
+  ]
+}

@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.env
+*.db
+*.pkl
+*.pth
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Blockchain
+blockchain/node_modules/
+blockchain/artifacts/
+blockchain/cache/
+blockchain/.env
+
+# Models (large files)
+backend/models/rf_model.pkl
+backend/models/dl_model.pth
+backend/models/scaler.pkl
+
+# Logs & quarantine
+backend/blockchain_log.json
+backend/quarantine/
+backend/watched/
+backend/reports/
+
+# OS
+.DS_Store
+Thumbs.db
+*.log

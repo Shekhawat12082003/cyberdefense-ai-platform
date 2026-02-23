@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background-color: #000;
+  color: #fff;
+  font-family: 'Courier New', monospace;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #111; }
+::-webkit-scrollbar-thumb { background: #00d4ff; border-radius: 3px; }
+
+.glow-red   { box-shadow: 0 0 15px #ff003c55; border: 1px solid #ff003c; }
+.glow-blue  { box-shadow: 0 0 15px #00d4ff55; border: 1px solid #00d4ff; }
+.glow-green { box-shadow: 0 0 15px #00ff8855; border: 1px solid #00ff88; }
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 10px #ff003c; border-color: #ff003c; }
+  50%       { box-shadow: 0 0 40px #ff003c, 0 0 80px #ff003c44; border-color: #ff6666; }
+}
+.alert-pulse { animation: pulse-red 1.2s infinite; border: 1px solid #ff003c; }
+
+@keyframes scan-line {
+  0%   { top: 0%; opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+.scan-line {
+  position: absolute;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #00d4ff, transparent);
+  animation: scan-line 2s linear infinite;
+}
+
+.neon-text-blue {
+  color: #00d4ff;
+  text-shadow: 0 0 10px #00d4ff, 0 0 20px #00d4ff44;
+}
+.neon-text-red {
+  color: #ff003c;
+  text-shadow: 0 0 10px #ff003c, 0 0 20px #ff003c44;
+}
+.neon-text-green {
+  color: #00ff88;
+  text-shadow: 0 0 10px #00ff88, 0 0 20px #00ff8844;
+}
+
+.cyber-card { transition: all 0.3s ease; }
+.cyber-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 0 25px #00d4ff44;
+}
+
+.cyber-grid {
+  background-image:
+    linear-gradient(#00d4ff08 1px, transparent 1px),
+    linear-gradient(90deg, #00d4ff08 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+.cursor::after {
+  content: '▊';
+  animation: blink 1s infinite;
+  color: #00d4ff;
+}
+
+@keyframes progress-glow {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.7; }
+}
+.progress-bar { animation: progress-glow 2s infinite; }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 0.4s ease forwards; }
+
+@keyframes matrix-flicker {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+.matrix-text { animation: matrix-flicker 3s infinite; color: #00ff88; }

@@ -1,0 +1,21 @@
+{
+  "name": "cyberdefense-platform",
+  "version": "1.0.0",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.1.0",
+    "dotenv": "^17.3.1",
+    "ethers": "^6.16.0",
+    "hardhat": "^3.1.9"
+  }
+}

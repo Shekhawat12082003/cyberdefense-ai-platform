@@ -1,0 +1,17 @@
+{
+  "Machine": 0.047094096841786254,
+  "DebugSize": 0.11190101451097434,
+  "DebugRVA": 0.1081817221975821,
+  "MajorImageVersion": 0.027403080926641697,
+  "MajorOSVersion": 0.08491496453414378,
+  "ExportRVA": 0.014343945963786747,
+  "ExportSize": 0.01739039740213474,
+  "IatVRA": 0.04143683307396072,
+  "MajorLinkerVersion": 0.12363587825028992,
+  "MinorLinkerVersion": 0.015090400527863894,
+  "NumberOfSections": 0.0469318244549193,
+  "SizeOfStackReserve": 0.04806877751128391,
+  "DllCharacteristics": 0.2338509163793652,
+  "ResourceSize": 0.07902260737805093,
+  "BitcoinAddresses": 0.000733540047216281
+}

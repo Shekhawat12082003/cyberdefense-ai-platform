@@ -1,0 +1,20 @@
+{
+  "input_dim": 15,
+  "features": [
+    "Machine",
+    "DebugSize",
+    "DebugRVA",
+    "MajorImageVersion",
+    "MajorOSVersion",
+    "ExportRVA",
+    "ExportSize",
+    "IatVRA",
+    "MajorLinkerVersion",
+    "MinorLinkerVersion",
+    "NumberOfSections",
+    "SizeOfStackReserve",
+    "DllCharacteristics",
+    "ResourceSize",
+    "BitcoinAddresses"
+  ]
+}
