@@ -1,8 +1,17 @@
 import sqlite3
 import json
+import hashlib
 from datetime import datetime
 
 DB_PATH = 'cyberdefense.db'
+
+def _hash(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+DEFAULT_USERS = [
+    ('admin',   _hash('admin123'),   'admin'),
+    ('analyst', _hash('analyst123'), 'analyst'),
+]
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -18,9 +27,89 @@ def init_db():
             timestamp        TEXT
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role     TEXT NOT NULL DEFAULT 'analyst'
+        )
+    ''')
+    # Seed default users if table is empty
+    c.execute('SELECT COUNT(*) FROM users')
+    if c.fetchone()[0] == 0:
+        c.executemany(
+            'INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)',
+            DEFAULT_USERS
+        )
+        print("✅ Default users seeded (admin, analyst)")
     conn.commit()
     conn.close()
     print("✅ Database initialized: cyberdefense.db")
+
+
+# ── User CRUD ─────────────────────────────────────────────
+
+def get_user(username: str):
+    """Return user dict or None. Password is hashed."""
+    conn = sqlite3.connect(DB_PATH)
+    c    = conn.cursor()
+    c.execute('SELECT username, password, role FROM users WHERE username = ?', (username,))
+    row  = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {'username': row[0], 'password': row[1], 'role': row[2]}
+
+
+def verify_user(username: str, password: str):
+    """Return user dict if credentials are valid, else None."""
+    user = get_user(username)
+    if not user:
+        return None
+    if user['password'] == _hash(password):
+        return user
+    return None
+
+
+def get_all_users():
+    conn = sqlite3.connect(DB_PATH)
+    c    = conn.cursor()
+    c.execute('SELECT username, role FROM users ORDER BY role, username')
+    rows = c.fetchall()
+    conn.close()
+    return [{'username': r[0], 'role': r[1]} for r in rows]
+
+
+def create_user(username: str, password: str, role: str = 'analyst'):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            'INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
+            (username, _hash(password), role)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        return False  # already exists
+
+
+def delete_user(username: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('DELETE FROM users WHERE username = ?', (username,))
+    conn.commit()
+    conn.close()
+
+
+def change_password(username: str, new_password: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        'UPDATE users SET password = ? WHERE username = ?',
+        (_hash(new_password), username)
+    )
+    conn.commit()
+    conn.close()
 
 
 def save_threat(data):
@@ -72,6 +161,9 @@ def get_stats():
     c.execute("SELECT COUNT(*) FROM threats WHERE prediction = 'Ransomware'")
     threats = c.fetchone()[0]
 
+    c.execute("SELECT COUNT(*) FROM threats WHERE prediction = 'Suspicious'")
+    medium = c.fetchone()[0]
+
     c.execute("SELECT COUNT(*) FROM threats WHERE threat_score > 70")
     high_risk = c.fetchone()[0]
 
@@ -83,9 +175,10 @@ def get_stats():
     health = max(0, 100 - int((threats / total * 100) if total > 0 else 0))
 
     return {
-        'total_scanned': total,
-        'active_threats': threats,
+        'total_scanned':    total,
+        'active_threats':   threats,
+        'medium_threats':   medium,
         'high_risk_alerts': high_risk,
-        'system_health': health,
-        'timeline': timeline
+        'system_health':    health,
+        'timeline':         timeline
     }

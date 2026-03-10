@@ -128,6 +128,18 @@ export default function Dashboard() {
             ⛓️ BLOCKCHAIN
           </Link>
 
+          <Link to="/soc" style={navBtn('#00ff88')}
+            onMouseEnter={e => { e.target.style.background = '#00ff88'; e.target.style.color = '#000' }}
+            onMouseLeave={e => { e.target.style.background = 'transparent'; e.target.style.color = '#00ff88' }}>
+            🖥 SOC
+          </Link>
+
+          <Link to="/chat" style={navBtn('#ff8c00')}
+            onMouseEnter={e => { e.target.style.background = '#ff8c00'; e.target.style.color = '#000' }}
+            onMouseLeave={e => { e.target.style.background = 'transparent'; e.target.style.color = '#ff8c00' }}>
+            🤖 AI CHAT
+          </Link>
+
           {/* ADMIN — only visible to admin role */}
           {isAdmin && (
             <Link to="/admin" style={navBtn('#ff003c')}

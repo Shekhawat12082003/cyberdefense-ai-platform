@@ -7,6 +7,8 @@ import Threats    from './pages/Threats'
 import Analytics  from './pages/Analytics'
 import Blockchain from './pages/Blockchain'
 import Admin      from './pages/Admin'
+import SOC        from './pages/SOC'
+import Chatbot    from './pages/Chatbot'
 
 // ══════════════════════════════════════════════════════════
 // TOKEN CHECK HOOK
@@ -179,6 +181,16 @@ export default function App() {
         {/* Admin only */}
         <Route path="/admin" element={
           <AdminRoute><Admin /></AdminRoute>
+        } />
+
+        {/* SOC war room — any logged in user */}
+        <Route path="/soc" element={
+          <PrivateRoute><SOC /></PrivateRoute>
+        } />
+
+        {/* AI Chatbot — any logged in user */}
+        <Route path="/chat" element={
+          <PrivateRoute><Chatbot /></PrivateRoute>
         } />
 
         {/* Catch all unknown routes */}

@@ -15,6 +15,7 @@ from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 
 from utils.db import init_db, save_threat
+from utils.db import get_user, verify_user, get_all_users, create_user, delete_user, change_password
 from models.threat_scorer import predict
 
 app = Flask(__name__)
@@ -58,10 +59,8 @@ if EMAIL_AVAILABLE and send_system_startup_email:
     threading.Thread(target=send_system_startup_email, daemon=True).start()
 
 # ── Users ─────────────────────────────────────────────────
-USERS = {
-    'admin':   {'password': 'admin123',   'role': 'admin'},
-    'analyst': {'password': 'analyst123', 'role': 'analyst'}
-}
+# Users are now persisted in SQLite via utils/db.py
+# Default accounts (admin/admin123, analyst/analyst123) are seeded on first run
 
 
 # ── Token Helpers ─────────────────────────────────────────
@@ -125,8 +124,8 @@ def login():
     data     = request.get_json()
     username = data.get('username', '')
     password = data.get('password', '')
-    user     = USERS.get(username)
-    if not user or user['password'] != password:
+    user     = verify_user(username, password)
+    if not user:
         return jsonify({'error': 'Invalid credentials'}), 401
     token = jwt.encode({
         'username': username,
@@ -374,10 +373,7 @@ def email_test():
 def admin_get_users():
     if not admin_only(request):
         return jsonify({'error': 'Admin only'}), 403
-    return jsonify([
-        {'username': k, 'role': v['role']}
-        for k, v in USERS.items()
-    ])
+    return jsonify(get_all_users())
 
 
 @app.route('/api/admin/users', methods=['POST'])
@@ -390,9 +386,8 @@ def admin_add_user():
     role     = data.get('role', 'analyst')
     if not username or not password:
         return jsonify({'error': 'Username and password required'}), 400
-    if username in USERS:
+    if not create_user(username, password, role):
         return jsonify({'error': 'User already exists'}), 409
-    USERS[username] = {'password': password, 'role': role}
     print(f"👤 Admin added user: {username} ({role})")
     return jsonify({'status': 'User created', 'username': username})
 
@@ -403,9 +398,9 @@ def admin_delete_user(username):
         return jsonify({'error': 'Admin only'}), 403
     if username == 'admin':
         return jsonify({'error': 'Cannot delete admin'}), 400
-    if username not in USERS:
+    if not get_user(username):
         return jsonify({'error': 'User not found'}), 404
-    del USERS[username]
+    delete_user(username)
     print(f"👤 Admin deleted user: {username}")
     return jsonify({'status': 'User deleted'})
 
@@ -418,9 +413,9 @@ def admin_change_password(username):
     password = data.get('password', '').strip()
     if not password:
         return jsonify({'error': 'Password required'}), 400
-    if username not in USERS:
+    if not get_user(username):
         return jsonify({'error': 'User not found'}), 404
-    USERS[username]['password'] = password
+    change_password(username, password)
     print(f"👤 Password changed for: {username}")
     return jsonify({'status': 'Password updated'})
 
@@ -475,7 +470,7 @@ def admin_system_info():
         'email_enabled':    os.getenv('EMAIL_ENABLED', 'false'),
         'quarantine_files': q_files,
         'blockchain_logs':  bc_logs,
-        'users_count':      len(USERS),
+        'users_count':      len(get_all_users()),
         'contract':         os.getenv('CONTRACT_ADDRESS', 'N/A'),
         'uptime':           datetime.utcnow().isoformat()
     })
@@ -510,6 +505,32 @@ def admin_update_settings():
         'status':    'Settings updated',
         'threshold': app.config.get('THREAT_THRESHOLD', 70)
     })
+
+
+# ═════════════════════════════════════════════════════════
+# AI CHATBOT
+# ═════════════════════════════════════════════════════════
+
+@app.route('/api/chat', methods=['POST'])
+def chat_route():
+    user = verify_token(request)
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    from utils.chatbot import chat as ai_chat
+    body    = request.get_json()
+    message = body.get('message', '').strip()
+    context = body.get('context', {})
+    history = body.get('history', [])
+
+    if not message:
+        return jsonify({'error': 'Message required'}), 400
+
+    try:
+        reply = ai_chat(message, context=context, history=history)
+        return jsonify({'reply': reply})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 # ═════════════════════════════════════════════════════════
