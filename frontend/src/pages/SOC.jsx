@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { io } from 'socket.io-client'
+import axios from 'axios'
 import { getStats, getThreats } from '../api'
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
@@ -86,14 +87,46 @@ function LiveClock() {
 // ══════════════════════════════════════════════════════════
 // MAIN SOC PAGE
 // ══════════════════════════════════════════════════════════
+const ACTION_COLOR = {
+  LOGIN_FAILED:       '#ff003c',
+  LOGIN_SUCCESS:      '#00ff88',
+  SCAN:               '#00d4ff',
+  UPLOAD_SCAN:        '#00d4ff',
+  THREATS_CLEARED:    '#ff8c00',
+  QUARANTINE_CLEARED: '#ff8c00',
+  USER_CREATED:       '#ffe600',
+  USER_DELETED:       '#ff003c',
+  PASSWORD_CHANGED:   '#ffe600',
+  SETTINGS_CHANGED:   '#ff8c00',
+  REPORT_DOWNLOAD:    '#aaa',
+  CSV_EXPORT:         '#aaa',
+}
+
+function toFeedEntry(e) {
+  const action = (e.action || e.action_type || '').trim()
+  return {
+    time:    new Date(e.timestamp).toLocaleTimeString(),
+    action,
+    user:    e.username || e.user || '—',
+    details: e.details  || '',
+    color:   ACTION_COLOR[action] || '#aaa'
+  }
+}
+
 export default function SOC() {
-  const [stats,     setStats]     = useState(null)
-  const [threats,   setThreats]   = useState([])
-  const [activity,  setActivity]  = useState([])
+  const [stats,       setStats]       = useState(null)
+  const [threats,     setThreats]     = useState([])
+  const [liveEvents,  setLiveEvents]  = useState([])   // real-time socket events
+  const [history,     setHistory]     = useState([])   // DB audit log snapshot
   const [alertBanner, setAlertBanner] = useState(null)
-  const [lastScore, setLastScore] = useState(null)
+  const [lastScore,   setLastScore]   = useState(null)
   const navigate = useNavigate()
   const socketRef = useRef(null)
+
+  // Combined feed: live events on top, historical below (deduplicated by time+action)
+  const activity = [...liveEvents, ...history.filter(h =>
+    !liveEvents.some(l => l.time === h.time && l.action === h.action && l.user === h.user)
+  )]
 
   // ── WebSocket ──────────────────────────────────────────
   useEffect(() => {
@@ -102,21 +135,14 @@ export default function SOC() {
 
     socket.on('high_threat_alert', (data) => {
       setAlertBanner(data)
-      setLastScore(data.threat_score)
-      setActivity(prev => [{
-        time: new Date().toLocaleTimeString(),
-        msg:  `🚨 HIGH THREAT — ${data.prediction} (${data.threat_score?.toFixed(1)})`,
-        color: '#ff003c'
-      }, ...prev.slice(0, 19)])
+      setLastScore(Math.min(data.threat_score ?? 0, 100))
       setTimeout(() => setAlertBanner(null), 8000)
     })
 
-    socket.on('file_scanned', (data) => {
-      setActivity(prev => [{
-        time: new Date().toLocaleTimeString(),
-        msg:  `📁 Scanned: ${data.file_name || 'file'} → ${data.prediction}`,
-        color: data.risk_level === 'HIGH' ? '#ff003c' : data.risk_level === 'MEDIUM' ? '#ff8c00' : '#00ff88'
-      }, ...prev.slice(0, 19)])
+    // Real-time audit events prepend to liveEvents (independent of DB history)
+    socket.on('audit_event', (data) => {
+      if (!data.action) return
+      setLiveEvents(prev => [toFeedEntry(data), ...prev.slice(0, 499)])
     })
 
     return () => socket.disconnect()
@@ -125,17 +151,26 @@ export default function SOC() {
   // ── Data fetch ─────────────────────────────────────────
   const fetchData = async () => {
     try {
-      const [s, t] = await Promise.all([getStats(), getThreats()])
+      const token = localStorage.getItem('token')
+      const headers = token ? { Authorization: `Bearer ${token}` } : {}
+      const [s, t, a] = await Promise.all([
+        getStats(),
+        getThreats(),
+        axios.get('http://localhost:5000/api/audit-log?limit=500', { headers })
+      ])
       setStats(s.data)
       const list = t.data.slice(0, 20)
       setThreats(list)
-      if (list.length > 0) setLastScore(list[0].threat_score)
+      if (list.length > 0) setLastScore(Math.min(list[0].threat_score ?? 0, 100))
+      // Always refresh DB history — socket liveEvents are separate so no race condition
+      const entries = (a.data || []).filter(e => e.action).map(toFeedEntry)
+      setHistory(entries)
     } catch {}
   }
 
   useEffect(() => {
     fetchData()
-    const id = setInterval(fetchData, 5000)
+    const id = setInterval(fetchData, 10000)
     return () => clearInterval(id)
   }, [])
 
@@ -158,7 +193,7 @@ export default function SOC() {
 
   const barData = threats.slice(0, 8).map(t => ({
     name:  t.file_name?.substring(0, 10) || 'file',
-    score: t.threat_score
+    score: Math.min(t.threat_score ?? 0, 100)
   })).reverse()
 
   const services = [
@@ -201,7 +236,7 @@ export default function SOC() {
           letterSpacing: 3,
           color: '#fff'
         }}>
-          🚨 HIGH THREAT DETECTED — {alertBanner.prediction?.toUpperCase()} — SCORE: {alertBanner.threat_score?.toFixed(1)} — RISK: {alertBanner.risk_level}
+          🚨 HIGH THREAT DETECTED — {alertBanner.prediction?.toUpperCase()} — SCORE: {Math.min(alertBanner.threat_score ?? 0, 100).toFixed(1)} — RISK: {alertBanner.risk_level}
         </div>
       )}
 
@@ -258,7 +293,7 @@ export default function SOC() {
           {lastScore && (
             <div style={{ textAlign: 'right' }}>
               <div style={{ ...mono(32, levelColor), fontWeight: 'bold', lineHeight: 1 }}>
-                {lastScore?.toFixed(1)}
+                {Math.min(lastScore ?? 0, 100).toFixed(1)}
               </div>
               <div style={{ ...mono(9, '#444'), letterSpacing: 3 }}>LATEST SCORE</div>
             </div>
@@ -295,10 +330,10 @@ export default function SOC() {
                     <span style={{ ...mono(10, '#aaa'), overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: 160, textOverflow: 'ellipsis' }}>
                       {t.file_name}
                     </span>
-                    <span style={{ ...mono(10, c), fontWeight: 'bold' }}>{t.threat_score?.toFixed(1)}</span>
+                    <span style={{ ...mono(10, c), fontWeight: 'bold' }}>{Math.min(t.threat_score ?? 0, 100).toFixed(1)}</span>
                   </div>
                   <div style={{ height: 4, background: '#0d0d1a', borderRadius: 2 }}>
-                    <div style={{ width: `${t.threat_score}%`, height: '100%', background: c, borderRadius: 2, boxShadow: `0 0 6px ${c}` }} />
+                    <div style={{ width: `${Math.min(t.threat_score ?? 0, 100)}%`, height: '100%', background: c, borderRadius: 2, boxShadow: `0 0 6px ${c}` }} />
                   </div>
                 </div>
               )
@@ -315,6 +350,8 @@ export default function SOC() {
                   <YAxis domain={[0, 100]} tick={{ fill: '#444', fontSize: 8 }} />
                   <Tooltip
                     contentStyle={{ background: '#000a1e', border: '1px solid #00d4ff33', color: '#fff', fontFamily: 'monospace', fontSize: 11 }}
+                    labelStyle={{ color: '#00d4ff', fontFamily: 'monospace', fontSize: 11 }}
+                    itemStyle={{ color: '#fff', fontFamily: 'monospace', fontSize: 11 }}
                   />
                   <Bar dataKey="score" radius={[3, 3, 0, 0]}>
                     {barData.map((d, i) => (
@@ -358,6 +395,8 @@ export default function SOC() {
                     </Pie>
                     <Tooltip
                       contentStyle={{ background: '#000a1e', border: '1px solid #00d4ff33', color: '#fff', fontFamily: 'monospace', fontSize: 11 }}
+                      labelStyle={{ color: '#00d4ff', fontFamily: 'monospace', fontSize: 11 }}
+                      itemStyle={{ color: '#fff', fontFamily: 'monospace', fontSize: 11 }}
                     />
                   </PieChart>
                 </ResponsiveContainer>
@@ -374,18 +413,25 @@ export default function SOC() {
           </div>
 
           {/* Live Activity Feed */}
-          <div style={card()}>
-            <div style={label}>LIVE ACTIVITY FEED</div>
-            {activity.length === 0 ? (
-              <div style={{ ...mono(11, '#333'), paddingTop: 10 }}>Waiting for events...</div>
-            ) : (
-              activity.map((a, i) => (
-                <div key={i} style={{ display: 'flex', gap: 12, marginBottom: 6, opacity: 1 - i * 0.04 }}>
-                  <span style={mono(9, '#444')}>{a.time}</span>
-                  <span style={mono(10, a.color)}>{a.msg}</span>
-                </div>
-              ))
-            )}
+          <div style={{ ...card(), display: 'flex', flexDirection: 'column', height: 220 }}>
+            <div style={{ ...label, display: 'flex', justifyContent: 'space-between' }}>
+              <span>LIVE ACTIVITY FEED</span>
+              <span style={{ color: '#333', fontSize: 9, letterSpacing: 1 }}>{activity.length} events</span>
+            </div>
+            <div style={{ overflowY: 'scroll', flex: 1, paddingRight: 4 }}>
+              {activity.length === 0 ? (
+                <div style={{ ...mono(11, '#333'), paddingTop: 10 }}>Waiting for events...</div>
+              ) : (
+                activity.map((a, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, alignItems: 'baseline' }}>
+                    <span style={{ ...mono(9, '#555'), whiteSpace: 'nowrap', flexShrink: 0 }}>{a.time}</span>
+                    <span style={{ ...mono(9, a.color), whiteSpace: 'nowrap', flexShrink: 0, fontWeight: 'bold', minWidth: 140 }}>{a.action}</span>
+                    <span style={{ ...mono(9, '#888'), whiteSpace: 'nowrap', flexShrink: 0, minWidth: 65 }}>{a.user}</span>
+                    <span style={{ ...mono(9, '#aaa') }}>{a.details}</span>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
 

@@ -1,84 +1,219 @@
 """
 AI Security Analyst Chatbot
-Uses OpenAI API if OPENAI_API_KEY is set in .env.
-Falls back to a context-aware rule-based engine if no key is configured.
+Provider priority (first available key wins):
+  1. OpenAI   — OPENAI_API_KEY   (gpt-4o-mini)
+  2. Gemini   — GEMINI_API_KEY   (gemini-2.0-flash, generous free tier)
+  3. Groq     — GROQ_API_KEY     (llama-3.3-70b-versatile, free tier)
+  4. Rule-based fallback (no key required)
 """
 import os
 import json
 
 
 def _build_system_prompt(context: dict) -> str:
-    stats   = context.get('stats',   {}) if context else {}
-    threats = context.get('threats', []) if context else []
+    stats             = context.get('stats',           {}) if context else {}
+    threats           = context.get('threats',         []) if context else []
+    failed_logins     = context.get('failed_logins',    0)
+    recent_logins     = context.get('recent_logins',   [])
+    quarantine_count  = context.get('quarantine_count', 0)
+    quarantine_log    = context.get('quarantine_log',  [])
+    recent_audit      = context.get('recent_audit',    [])
+    users_count       = context.get('users_count',      0)
+    users             = context.get('users',           [])
+    blockchain_mode   = context.get('blockchain_mode', 'unknown')
+    threat_threshold  = context.get('threat_threshold', 70)
+    email_enabled     = context.get('email_enabled',   False)
+    current_user      = context.get('current_user',    'analyst')
+    current_role      = context.get('current_role',    'analyst')
 
     threat_summary = ''
     if threats:
         lines = []
-        for t in threats[:5]:
+        for t in threats[:8]:
             lines.append(
                 f"  - {t.get('file_name','?')} | {t.get('prediction','?')} | "
-                f"score {t.get('threat_score',0):.1f} | {t.get('timestamp','')[:19]}"
+                f"score {t.get('threat_score',0):.1f} | risk {t.get('risk_level','?')} | {t.get('timestamp','')[:19]}"
             )
-        threat_summary = 'Recent detections:\n' + '\n'.join(lines)
+        threat_summary = 'Recent detections (latest first):\n' + '\n'.join(lines)
+
+    quarantine_summary = ''
+    if quarantine_log:
+        qlines = [f"  - {q.get('original','?')} | score {q.get('score',0):.1f} | {q.get('timestamp','')[:19]}" for q in quarantine_log[:5]]
+        quarantine_summary = f'Quarantined files ({quarantine_count} total):\n' + '\n'.join(qlines)
+
+    audit_summary = ''
+    if recent_audit:
+        alines = [f"  - [{e.get('timestamp','')[:19]}] {e.get('username','?')}: {e.get('action','?')} — {e.get('details','')}" for e in recent_audit[:5]]
+        audit_summary = 'Recent audit events:\n' + '\n'.join(alines)
+
+    login_summary = ''
+    if recent_logins:
+        llines = [f"  - [{e.get('timestamp','')[:19]}] {e.get('username','?')}: {e.get('action','?')} {e.get('details','')}" for e in recent_logins[:5]]
+        login_summary = f'Recent login activity (failed attempts total: {failed_logins}):\n' + '\n'.join(llines)
+
+    users_summary = ''
+    if users:
+        users_summary = f'Platform users ({users_count} total): ' + ', '.join(f"{u['username']} ({u['role']})" for u in users)
 
     stats_summary = (
         f"Platform stats — total scanned: {stats.get('total_scanned',0)}, "
         f"active threats: {stats.get('active_threats',0)}, "
-        f"high risk: {stats.get('high_risk_alerts',0)}, "
-        f"system health: {stats.get('system_health',100)}%"
+        f"medium threats: {stats.get('medium_threats',0)}, "
+        f"high risk alerts: {stats.get('high_risk_alerts',0)}, "
+        f"system health: {stats.get('system_health',100)}%, "
+        f"quarantine files: {quarantine_count}, "
+        f"failed login attempts: {failed_logins}"
     ) if stats else ''
 
     return f"""You are an expert AI cybersecurity analyst embedded in the CyberDefense AI Platform.
-You help SOC analysts understand ransomware threats, interpret ML predictions, and respond to incidents.
+You are talking to **{current_user}** (role: {current_role}). Answer questions about the live platform state using the context below.
+Be specific — quote real numbers, file names, scores, and timestamps from the context when answering.
 
-Platform context:
+LIVE PLATFORM CONTEXT:
 {stats_summary}
 {threat_summary}
+{quarantine_summary}
+{login_summary}
+{audit_summary}
+{users_summary}
 
-Platform details:
-- Dual AI ensemble: Random Forest (60%) + PyTorch DNN (40%), trained on 62,485 PE files
-- Random Forest accuracy: 99.62% | DNN accuracy: 98.30%
-- 15 features: Machine, DebugSize, DebugRVA, MajorImageVersion, MajorOSVersion, ExportRVA,
+Platform configuration:
+- Threat threshold: {threat_threshold} (scores >{threat_threshold} = HIGH)
+- Blockchain mode: {blockchain_mode} | Contract: 0x9807Ae60581B38611534d656f6a16AF28B846E17
+- Email alerts: {'enabled' if email_enabled else 'disabled'}
+- AI ensemble: Random Forest (60%) + PyTorch DNN (40%), trained on 62,485 PE files
+- RF accuracy: 99.62% | DNN accuracy: 98.30%
+- 15 PE features: Machine, DebugSize, DebugRVA, MajorImageVersion, MajorOSVersion, ExportRVA,
   ExportSize, IatVRA, MajorLinkerVersion, MinorLinkerVersion, NumberOfSections,
   SizeOfStackReserve, DllCharacteristics, ResourceSize, BitcoinAddresses
-- Threat thresholds: >70 = HIGH/Ransomware, 30-70 = MEDIUM/Suspicious, <30 = LOW/Benign
-- Blockchain: Core Testnet2 (Chain ID 1114), contract 0x9807Ae60581B38611534d656f6a16AF28B846E17
-- Auto-quarantine on HIGH threat detection
 - SHAP values used for explainability
+- Auto-quarantine triggers on score >{threat_threshold} or ransomware extension
 
-Respond concisely and professionally. Use **bold** for key terms.
-Format lists with - bullets. Keep answers focused and actionable."""
+Respond concisely and professionally. Use **bold** for key terms and numbers.
+Format lists with - bullets. Always use real data from the context above when available."""
 
 
 def _rule_based_reply(message: str, context: dict) -> str:
     """Context-aware rule-based fallback when no API key is set."""
     msg = message.lower()
-    stats   = context.get('stats',   {}) if context else {}
-    threats = context.get('threats', []) if context else []
+    stats            = context.get('stats',            {}) if context else {}
+    threats          = context.get('threats',          []) if context else []
+    failed_logins    = context.get('failed_logins',     0)
+    recent_logins    = context.get('recent_logins',    [])
+    quarantine_count = context.get('quarantine_count',  0)
+    quarantine_log   = context.get('quarantine_log',   [])
+    recent_audit     = context.get('recent_audit',     [])
+    users_count      = context.get('users_count',       0)
+    users            = context.get('users',            [])
+    blockchain_mode  = context.get('blockchain_mode',  'unknown')
+    threat_threshold = context.get('threat_threshold',  70)
+    email_enabled    = context.get('email_enabled',    False)
 
-    # Status / summary
-    if any(w in msg for w in ['status', 'summary', 'current', 'overview', 'situation']):
-        total   = stats.get('total_scanned',   0)
-        active  = stats.get('active_threats',  0)
+    # ── Status / summary / overview ───────────────────────
+    if any(w in msg for w in ['status', 'summary', 'current', 'overview', 'situation', 'dashboard', 'report', 'tell me about', 'how is']):
+        total   = stats.get('total_scanned',    0)
+        active  = stats.get('active_threats',   0)
+        medium  = stats.get('medium_threats',   0)
         high    = stats.get('high_risk_alerts', 0)
-        health  = stats.get('system_health',   100)
-        return (
-            f"**Current Threat Status**\n\n"
+        health  = stats.get('system_health',    100)
+        latest  = threats[0] if threats else None
+        out = (
+            f"**Current Platform Status**\n\n"
             f"- Total files scanned: **{total}**\n"
-            f"- Active ransomware detections: **{active}**\n"
+            f"- Ransomware detections: **{active}**\n"
+            f"- Medium/Suspicious threats: **{medium}**\n"
             f"- High-risk alerts: **{high}**\n"
-            f"- System health: **{health}%**\n\n"
-            + (f"Most recent detection: **{threats[0]['file_name']}** — "
-               f"score {threats[0]['threat_score']:.1f} ({threats[0]['prediction']})"
-               if threats else "No detections recorded yet.")
+            f"- System health: **{health}%**\n"
+            f"- Quarantined files: **{quarantine_count}**\n"
+            f"- Failed login attempts: **{failed_logins}**\n"
+            f"- Registered users: **{users_count}**\n"
+            f"- Blockchain mode: **{blockchain_mode}**\n"
+            f"- Email alerts: **{'enabled' if email_enabled else 'disabled'}**\n\n"
+        )
+        if latest:
+            out += (f"Most recent detection: **{latest['file_name']}** — "
+                    f"score {latest['threat_score']:.1f} ({latest['prediction']}) at {latest.get('timestamp','')[:19]}")
+        else:
+            out += "No detections recorded yet."
+        return out
+
+    # ── Failed logins / security / brute force ────────────
+    if any(w in msg for w in ['fail', 'failed', 'attempt', 'login', 'brute', 'unauthori', 'credential', 'password', 'auth']):
+        out = f"**Login & Authentication Status**\n\n- Failed login attempts recorded: **{failed_logins}**\n"
+        if failed_logins > 5:
+            out += f"- ⚠️  **{failed_logins} failed attempts** detected — possible brute-force activity!\n"
+        if recent_logins:
+            out += "\n**Recent login events:**\n"
+            for e in recent_logins[:6]:
+                icon = '✅' if e.get('action') == 'LOGIN_SUCCESS' else '❌'
+                out += f"- {icon} {e.get('username','?')} — {e.get('action','?')} | {e.get('details','')} | {e.get('timestamp','')[:19]}\n"
+        else:
+            out += "\nNo login activity recorded yet."
+        return out
+
+    # ── System health ─────────────────────────────────────
+    if any(w in msg for w in ['health', 'system', 'platform', 'uptime', 'operational', 'running', 'performance']):
+        health   = stats.get('system_health', 100)
+        total    = stats.get('total_scanned', 0)
+        active   = stats.get('active_threats', 0)
+        status   = '🟢 Healthy' if health >= 80 else ('🟡 Degraded' if health >= 50 else '🔴 Critical')
+        return (
+            f"**System Health Report**\n\n"
+            f"- Health score: **{health}%** — {status}\n"
+            f"- Total files scanned: **{total}**\n"
+            f"- Active threats: **{active}**\n"
+            f"- Quarantined files: **{quarantine_count}**\n"
+            f"- Failed login attempts: **{failed_logins}**\n"
+            f"- Blockchain mode: **{blockchain_mode}**\n"
+            f"- Threat detection threshold: **{threat_threshold}**\n"
+            f"- Email alerts: **{'enabled' if email_enabled else 'disabled'}**"
         )
 
-    # Dangerous files
-    if any(w in msg for w in ['dangerous', 'worst', 'highest', 'most']):
+    # ── Quarantine ────────────────────────────────────────
+    if any(w in msg for w in ['quarantin', 'isolat', 'locked', 'enc']):
+        out = (
+            f"**Quarantine Status**\n\n"
+            f"- Files currently quarantined: **{quarantine_count}**\n"
+            f"- Location: `backend/quarantine/`\n"
+            f"- Trigger: score > {threat_threshold} OR ransomware extension (.locked, .enc, .crypto)\n\n"
+        )
+        if quarantine_log:
+            out += "**Recently quarantined:**\n"
+            for q in quarantine_log[:5]:
+                out += f"- **{q.get('original', q.get('file','?'))}** — score {q.get('score',0):.1f} ({q.get('prediction','?')}) | {q.get('timestamp','')[:19]}\n"
+        else:
+            out += "No quarantine records yet. Files are quarantined when the threat score exceeds the threshold."
+        return out
+
+    # ── Users ─────────────────────────────────────────────
+    if any(w in msg for w in ['user', 'account', 'analyst', 'admin', 'role', 'who']):
+        out = f"**Platform Users ({users_count} registered)**\n\n"
+        if users:
+            for u in users:
+                out += f"- **{u['username']}** — role: {u['role']}\n"
+        out += f"\nFailed login attempts: **{failed_logins}**"
+        return out
+
+    # ── Audit log / activity ──────────────────────────────
+    if any(w in msg for w in ['audit', 'log', 'activity', 'event', 'history', 'action', 'recent']):
+        out = "**Recent Platform Activity**\n\n"
+        if recent_audit:
+            for e in recent_audit[:8]:
+                out += f"- [{e.get('timestamp','')[:19]}] **{e.get('username','?')}**: {e.get('action','?')} — {e.get('details','')}\n"
+        else:
+            out += "No audit events recorded yet.\n"
+        out += f"\n*Failed login attempts today: **{failed_logins}***"
+        return out
+
+    # ── Dangerous files ───────────────────────────────────
+    if any(w in msg for w in ['dangerous', 'worst', 'highest', 'most', 'top', 'critical']):
         if not threats:
             return "No threats recorded yet."
-        top = sorted(threats, key=lambda x: x.get('threat_score', 0), reverse=True)[:3]
-        lines = [f"- **{t['file_name']}** — score {t['threat_score']:.1f} ({t['prediction']})" for t in top]
+        top = sorted(threats, key=lambda x: x.get('threat_score', 0), reverse=True)[:5]
+        lines = [
+            f"- **{t['file_name']}** — score {t['threat_score']:.1f} | {t['prediction']} | {t.get('risk_level','?')} | {t.get('timestamp','')[:19]}"
+            for t in top
+        ]
         return "**Top Threats by Score**\n\n" + '\n'.join(lines)
 
     # SHAP
@@ -148,54 +283,138 @@ def _rule_based_reply(message: str, context: dict) -> str:
             "You can view all quarantined files or clear them entirely."
         )
 
-    # Default
+    # ── Blockchain ────────────────────────────────────────
+    if any(w in msg for w in ['blockchain', 'hash', 'chain', 'on-chain', 'verify', 'tx', 'transaction']):
+        return (
+            f"**Blockchain Integration**\n\n"
+            f"- Mode: **{blockchain_mode}** (Core Testnet2, Chain ID 1114)\n"
+            f"- Contract: `0x9807Ae60581B38611534d656f6a16AF28B846E17`\n"
+            f"- Every HIGH threat is logged as an immutable on-chain transaction\n"
+            f"- Function: `logThreatSimple(hash, score, prediction)`\n\n"
+            f"To verify: go to the **Blockchain page**, paste the SHA-256 hash of a threat.\n"
+            f"Explorer: https://scan.test2.btcs.network"
+        )
+
+    # ── Scanned / threats count ───────────────────────────
+    if any(w in msg for w in ['how many', 'count', 'total', 'scanned', 'number', 'stat', 'metric']):
+        total  = stats.get('total_scanned',    0)
+        active = stats.get('active_threats',   0)
+        medium = stats.get('medium_threats',   0)
+        high   = stats.get('high_risk_alerts', 0)
+        health = stats.get('system_health',    100)
+        return (
+            f"**Platform Metrics**\n\n"
+            f"- Total files scanned: **{total}**\n"
+            f"- Ransomware detections: **{active}**\n"
+            f"- Medium/Suspicious threats: **{medium}**\n"
+            f"- High-risk alerts: **{high}**\n"
+            f"- System health: **{health}%**\n"
+            f"- Quarantined files: **{quarantine_count}**\n"
+            f"- Failed login attempts: **{failed_logins}**\n"
+            f"- Registered users: **{users_count}**"
+        )
+
+    # ── Default ───────────────────────────────────────────
     return (
         "I can help with:\n\n"
-        "- **Threat status** — ask 'summarize current threats'\n"
-        "- **Model explanation** — ask 'how does the AI model work'\n"
-        "- **SHAP values** — ask 'explain SHAP'\n"
-        "- **Incident response** — ask 'what should I do about a ransomware'\n"
-        "- **Blockchain** — ask 'how does blockchain logging work'\n"
-        "- **Quarantine** — ask 'how does auto-quarantine work'\n\n"
-        "💡 Tip: Set `OPENAI_API_KEY` in `.env` to enable full conversational AI."
+        "- **Platform status** — 'give me a full system status'\n"
+        "- **Failed logins** — 'how many failed login attempts'\n"
+        "- **System health** — 'what is the system health'\n"
+        "- **Quarantine** — 'what files are quarantined'\n"
+        "- **Users** — 'list all users'\n"
+        "- **Audit log** — 'show recent activity'\n"
+        "- **Top threats** — 'what are the most dangerous files'\n"
+        "- **Model explanation** — 'how does the AI model work'\n"
+        "- **SHAP values** — 'explain SHAP'\n"
+        "- **Incident response** — 'what should I do about a ransomware'\n"
+        "- **Blockchain** — 'how does blockchain logging work'\n\n"
+        "💡 Tip: Set `GEMINI_API_KEY` (free at aistudio.google.com) or `GROQ_API_KEY` "
+        "(free at console.groq.com) in `.env` to enable full conversational AI."
     )
+
+
+def _chat_openai(message: str, context: dict, history: list) -> str:
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv('OPENAI_API_KEY', '').strip())
+    messages = [{'role': 'system', 'content': _build_system_prompt(context)}]
+    for h in (history or [])[-10:]:
+        messages.append({'role': h['role'], 'content': h['text']})
+    messages.append({'role': 'user', 'content': message})
+    response = client.chat.completions.create(
+        model='gpt-4o-mini',
+        messages=messages,
+        max_tokens=600,
+        temperature=0.4
+    )
+    return response.choices[0].message.content
+
+
+def _chat_gemini(message: str, context: dict, history: list) -> str:
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=os.getenv('GEMINI_API_KEY', '').strip())
+
+    # Build conversation history
+    contents = []
+    for h in (history or [])[-10:]:
+        role = 'user' if h['role'] == 'user' else 'model'
+        contents.append(types.Content(role=role, parts=[types.Part(text=h['text'])]))
+    contents.append(types.Content(role='user', parts=[types.Part(text=message)]))
+
+    response = client.models.generate_content(
+        model='gemini-2.0-flash',
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=_build_system_prompt(context),
+            max_output_tokens=600,
+            temperature=0.4
+        )
+    )
+    return response.text
+
+
+def _chat_groq(message: str, context: dict, history: list) -> str:
+    from groq import Groq
+    client = Groq(api_key=os.getenv('GROQ_API_KEY', '').strip())
+    messages = [{'role': 'system', 'content': _build_system_prompt(context)}]
+    for h in (history or [])[-10:]:
+        messages.append({'role': h['role'], 'content': h['text']})
+    messages.append({'role': 'user', 'content': message})
+    response = client.chat.completions.create(
+        model='llama-3.3-70b-versatile',
+        messages=messages,
+        max_tokens=600,
+        temperature=0.4
+    )
+    return response.choices[0].message.content
 
 
 def chat(message: str, context: dict = None, history: list = None) -> str:
     """
-    Main entry point.
-    Returns a string reply.
-    Uses OpenAI if OPENAI_API_KEY is available, else rule-based fallback.
+    Main entry point.  Tries providers in order: OpenAI → Gemini → Groq → rule-based.
     """
-    api_key = os.getenv('OPENAI_API_KEY', '').strip()
+    context = context or {}
+    history = history or []
 
-    if not api_key:
-        return _rule_based_reply(message, context or {})
+    providers = [
+        ('openai',  os.getenv('OPENAI_API_KEY',  '').strip(), _chat_openai),
+        ('gemini',  os.getenv('GEMINI_API_KEY',  '').strip(), _chat_gemini),
+        ('groq',    os.getenv('GROQ_API_KEY',    '').strip(), _chat_groq),
+    ]
 
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+    last_error = None
+    for name, key, fn in providers:
+        if not key:
+            continue
+        try:
+            return fn(message, context, history)
+        except ImportError:
+            continue          # package not installed — try next
+        except Exception as e:
+            last_error = (name, e)
+            continue          # API error (quota, auth, …) — try next
 
-        messages = [{'role': 'system', 'content': _build_system_prompt(context)}]
+    # All providers failed or none configured — use rule-based engine
+    # Don't surface noisy API errors (quota, auth) to the user; fallback handles it cleanly
+    return _rule_based_reply(message, context)
 
-        # Add conversation history (last 10 turns)
-        for h in (history or [])[-10:]:
-            messages.append({'role': h['role'], 'content': h['text']})
-
-        messages.append({'role': 'user', 'content': message})
-
-        response = client.chat.completions.create(
-            model='gpt-4o-mini',
-            messages=messages,
-            max_tokens=600,
-            temperature=0.4
-        )
-        return response.choices[0].message.content
-
-    except ImportError:
-        return _rule_based_reply(message, context or {})
-    except Exception as e:
-        return (
-            f"⚠️ OpenAI API error: {str(e)}\n\n"
-            + _rule_based_reply(message, context or {})
-        )

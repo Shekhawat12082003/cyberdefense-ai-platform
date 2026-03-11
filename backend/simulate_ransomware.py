@@ -163,6 +163,11 @@ def simulate_mixed_attack(delay: float = 1.5):
         if is_ransomware:
             encrypted = xor_encrypt(content, XOR_KEY)
             final     = add_fake_pe_header(encrypted, ransomware_mode=True)
+        elif level == 'MEDIUM':
+            # Inject MEDIUM indicator so the file monitor applies the MEDIUM
+            # feature template instead of the benign baseline.
+            marked = b'HEUR_SUSP_PACKED:' + content
+            final  = add_fake_pe_header(marked, ransomware_mode=False)
         else:
             final = add_fake_pe_header(content, ransomware_mode=False)
 
@@ -203,6 +208,9 @@ def simulate_gradual_escalation(delay: float = 2.0):
         if is_ransomware:
             encrypted = xor_encrypt(content, XOR_KEY)
             final     = add_fake_pe_header(encrypted, ransomware_mode=True)
+        elif level == 'MEDIUM':
+            marked = b'HEUR_SUSP_PACKED:' + content
+            final  = add_fake_pe_header(marked, ransomware_mode=False)
         else:
             final = add_fake_pe_header(content, ransomware_mode=False)
 

@@ -53,11 +53,20 @@ export default function Chatbot() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [stats, threats] = await Promise.all([
-          axios.get(`${API}/api/stats`,   { headers: { Authorization: `Bearer ${token}` } }),
-          axios.get(`${API}/api/threats`, { headers: { Authorization: `Bearer ${token}` } }),
+        const [stats, threats, audit] = await Promise.all([
+          axios.get(`${API}/api/stats`,     { headers: { Authorization: `Bearer ${token}` } }),
+          axios.get(`${API}/api/threats`,   { headers: { Authorization: `Bearer ${token}` } }),
+          axios.get(`${API}/api/audit-log`, { headers: { Authorization: `Bearer ${token}` } }),
         ])
-        setContext({ stats: stats.data, threats: threats.data.slice(0, 5) })
+        const auditData = audit.data || []
+        const failedLogins = auditData.filter(e => e.action === 'LOGIN_FAILED').length
+        setContext({
+          stats:         stats.data,
+          threats:       threats.data.slice(0, 10),
+          failed_logins: failedLogins,
+          recent_logins: auditData.filter(e => ['LOGIN_SUCCESS','LOGIN_FAILED'].includes(e.action)).slice(0, 10),
+          recent_audit:  auditData.filter(e => !['LOGIN_SUCCESS','LOGIN_FAILED'].includes(e.action)).slice(0, 10),
+        })
       } catch {}
     }
     load()
@@ -114,8 +123,14 @@ export default function Chatbot() {
 
   // ── Suggested prompts ──────────────────────────────────
   const suggestions = [
-    'Summarize current threat status',
+    'Give me a full system status',
+    'How many failed login attempts?',
+    'What is the system health?',
+    'What files are quarantined?',
+    'Show recent audit activity',
     'What files were most dangerous?',
+    'How many files were scanned?',
+    'List all platform users',
     'Explain what SHAP values mean',
     'What should I do if a ransomware is detected?',
     'How does the AI model work?',

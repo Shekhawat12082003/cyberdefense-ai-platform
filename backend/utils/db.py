@@ -1,6 +1,8 @@
 import sqlite3
 import json
 import hashlib
+import csv
+import io
 from datetime import datetime
 
 DB_PATH = 'cyberdefense.db'
@@ -24,15 +26,32 @@ def init_db():
             prediction       TEXT,
             threat_score     REAL,
             blockchain_hash  TEXT,
-            timestamp        TEXT
+            timestamp        TEXT,
+            ai_summary       TEXT,
+            mitre_tactics    TEXT
         )
     ''')
+    # Migrate existing DB — add columns if they don't exist
+    for col in [('ai_summary', 'TEXT'), ('mitre_tactics', 'TEXT')]:
+        try:
+            c.execute(f'ALTER TABLE threats ADD COLUMN {col[0]} {col[1]}')
+        except Exception:
+            pass
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id       INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
             role     TEXT NOT NULL DEFAULT 'analyst'
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            username  TEXT,
+            action    TEXT,
+            details   TEXT
         )
     ''')
     # Seed default users if table is empty
@@ -117,16 +136,25 @@ def save_threat(data):
     c = conn.cursor()
     c.execute('''
         INSERT INTO threats
-        (file_name, features, prediction, threat_score, blockchain_hash, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
+        (file_name, features, prediction, threat_score, blockchain_hash, timestamp, ai_summary, mitre_tactics)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         data['file_name'],
         data['features'],
         data['prediction'],
         data['threat_score'],
         data['blockchain_hash'],
-        data['timestamp']
+        data['timestamp'],
+        data.get('ai_summary', ''),
+        data.get('mitre_tactics', '')
     ))
+    conn.commit()
+    conn.close()
+
+
+def update_threat_summary(threat_id: int, ai_summary: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('UPDATE threats SET ai_summary = ? WHERE id = ?', (ai_summary, threat_id))
     conn.commit()
     conn.close()
 
@@ -134,7 +162,7 @@ def save_threat(data):
 def get_all_threats():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('SELECT * FROM threats ORDER BY id DESC LIMIT 100')
+    c.execute('SELECT id, file_name, features, prediction, threat_score, blockchain_hash, timestamp, ai_summary, mitre_tactics FROM threats ORDER BY id DESC LIMIT 100')
     rows = c.fetchall()
     conn.close()
     return [
@@ -145,10 +173,61 @@ def get_all_threats():
             'prediction':      r[3],
             'threat_score':    r[4],
             'blockchain_hash': r[5],
-            'timestamp':       r[6]
+            'timestamp':       r[6],
+            'ai_summary':      r[7] or '',
+            'mitre_tactics':   r[8] or ''
         }
         for r in rows
     ]
+
+
+def get_threats_csv():
+    """Return CSV string of all threats."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, file_name, prediction, threat_score, blockchain_hash, timestamp, mitre_tactics FROM threats ORDER BY id DESC')
+    rows = c.fetchall()
+    conn.close()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['ID', 'File', 'Prediction', 'Threat Score', 'Hash', 'Timestamp', 'MITRE Tactics'])
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+# ── Audit Log ─────────────────────────────────────────────
+
+def log_audit(username: str, action: str, details: str = ''):
+    ts = datetime.utcnow().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        'INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)',
+        (ts, username or 'system', action, details)
+    )
+    conn.commit()
+    conn.close()
+    # Emit real-time event to SOC live feed
+    try:
+        from flask import current_app
+        socketio = current_app.extensions.get('socketio')
+        if socketio:
+            socketio.emit('audit_event', {
+                'timestamp': ts,
+                'username':  username or 'system',
+                'action':    action,
+                'details':   details
+            })
+    except Exception:
+        pass
+
+
+def get_audit_logs(limit: int = 500):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, timestamp, username, action, details FROM audit_log ORDER BY id DESC LIMIT ?', (limit,))
+    rows = c.fetchall()
+    conn.close()
+    return [{'id': r[0], 'timestamp': r[1], 'username': r[2], 'action': r[3], 'details': r[4]} for r in rows]
 
 
 def get_stats():

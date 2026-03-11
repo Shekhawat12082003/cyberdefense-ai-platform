@@ -9,6 +9,7 @@ import Blockchain from './pages/Blockchain'
 import Admin      from './pages/Admin'
 import SOC        from './pages/SOC'
 import Chatbot    from './pages/Chatbot'
+import AuditLog   from './pages/AuditLog'
 
 // ══════════════════════════════════════════════════════════
 // TOKEN CHECK HOOK
@@ -191,6 +192,11 @@ export default function App() {
         {/* AI Chatbot — any logged in user */}
         <Route path="/chat" element={
           <PrivateRoute><Chatbot /></PrivateRoute>
+        } />
+
+        {/* Audit Log — any logged in user */}
+        <Route path="/audit" element={
+          <PrivateRoute><AuditLog /></PrivateRoute>
         } />
 
         {/* Catch all unknown routes */}

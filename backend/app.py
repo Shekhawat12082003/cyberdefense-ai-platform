@@ -3,6 +3,7 @@ import json
 import hashlib
 import sqlite3
 import threading
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from flask_cors import CORS
 
 from utils.db import init_db, save_threat
 from utils.db import get_user, verify_user, get_all_users, create_user, delete_user, change_password
+from utils.db import log_audit, get_audit_logs, update_threat_summary, get_threats_csv
 from models.threat_scorer import predict
 
 app = Flask(__name__)
@@ -25,6 +27,72 @@ CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', logger=False)
 
 init_db()
+
+# ── Rate Limiting ─────────────────────────────────────────
+try:
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+    limiter = Limiter(app=app, key_func=get_remote_address, default_limits=[])
+    LIMITER_AVAILABLE = True
+    print("✅ Rate limiter ready")
+except Exception:
+    limiter = None
+    LIMITER_AVAILABLE = False
+
+# ── Webhook ───────────────────────────────────────────────
+try:
+    from utils.webhooks import send_webhook_alert
+    WEBHOOK_AVAILABLE = bool(os.getenv('WEBHOOK_URL', '').strip())
+except Exception:
+    send_webhook_alert = None
+    WEBHOOK_AVAILABLE  = False
+
+
+# ── MITRE ATT&CK Mapping ──────────────────────────────────
+def map_mitre(features: dict, prediction: str) -> list:
+    """Return list of relevant MITRE ATT&CK technique dicts based on features."""
+    tactics = []
+    score = features.get('BitcoinAddresses', 0)
+    sections = features.get('NumberOfSections', 0)
+    dll_chars = features.get('DllCharacteristics', 0)
+    stack = features.get('SizeOfStackReserve', 1048576)
+    resource = features.get('ResourceSize', 0)
+    iat = features.get('IatVRA', 0)
+
+    if prediction == 'Ransomware' or score > 0:
+        tactics.append({'id': 'T1486', 'name': 'Data Encrypted for Impact',
+                        'tactic': 'Impact', 'reason': 'Bitcoin address embedded',
+                        'url': 'https://attack.mitre.org/techniques/T1486/'})
+    if dll_chars == 0:
+        tactics.append({'id': 'T1027', 'name': 'Obfuscated Files or Information',
+                        'tactic': 'Defense Evasion', 'reason': 'No DLL security features (no ASLR/DEP/CFG)',
+                        'url': 'https://attack.mitre.org/techniques/T1027/'})
+    if sections > 5 or sections < 2:
+        tactics.append({'id': 'T1027.002', 'name': 'Software Packing',
+                        'tactic': 'Defense Evasion', 'reason': f'Unusual section count ({sections})',
+                        'url': 'https://attack.mitre.org/techniques/T1027/002/'})
+    if stack < 500000:
+        tactics.append({'id': 'T1055', 'name': 'Process Injection',
+                        'tactic': 'Privilege Escalation', 'reason': 'Small stack reserve suggests injector',
+                        'url': 'https://attack.mitre.org/techniques/T1055/'})
+    if iat == 0:
+        tactics.append({'id': 'T1129', 'name': 'Shared Modules',
+                        'tactic': 'Execution', 'reason': 'Empty IAT — dynamic import resolution',
+                        'url': 'https://attack.mitre.org/techniques/T1129/'})
+    if resource == 0:
+        tactics.append({'id': 'T1564', 'name': 'Hide Artifacts',
+                        'tactic': 'Defense Evasion', 'reason': 'No resources section',
+                        'url': 'https://attack.mitre.org/techniques/T1564/'})
+    if prediction in ('Ransomware', 'Suspicious'):
+        tactics.append({'id': 'T1490', 'name': 'Inhibit System Recovery',
+                        'tactic': 'Impact', 'reason': 'Ransomware/suspicious file may delete shadow copies',
+                        'url': 'https://attack.mitre.org/techniques/T1490/'})
+    # Always add at least one baseline technique for any PE file
+    if not tactics:
+        tactics.append({'id': 'T1106', 'name': 'Native API',
+                        'tactic': 'Execution', 'reason': 'PE file uses native Windows API calls',
+                        'url': 'https://attack.mitre.org/techniques/T1106/'})
+    return tactics[:5]  # cap at 5 most relevant
 
 # ── Blockchain ────────────────────────────────────────────
 try:
@@ -126,12 +194,14 @@ def login():
     password = data.get('password', '')
     user     = verify_user(username, password)
     if not user:
+        log_audit(username, 'LOGIN_FAILED', f'IP: {request.remote_addr}')
         return jsonify({'error': 'Invalid credentials'}), 401
     token = jwt.encode({
         'username': username,
         'role':     user['role'],
         'exp':      datetime.utcnow() + timedelta(hours=8)
     }, app.config['SECRET_KEY'], algorithm='HS256')
+    log_audit(username, 'LOGIN_SUCCESS', f'Role: {user["role"]} | IP: {request.remote_addr}')
     return jsonify({'token': token, 'role': user['role'], 'username': username})
 
 
@@ -159,14 +229,32 @@ def predict_route():
         json.dumps(hash_data, sort_keys=True).encode()
     ).hexdigest()
 
+    # ── MITRE ATT&CK Mapping ──────────────────────────────
+    mitre_tactics = map_mitre(features, result['prediction'])
+    result['mitre_tactics'] = mitre_tactics
+    mitre_str = ', '.join(f"{t['id']} {t['name']}" for t in mitre_tactics)
+
+    threat_id = None
     save_threat({
         'file_name':       features.get('file_name', 'unknown'),
         'features':        json.dumps(features),
         'prediction':      result['prediction'],
         'threat_score':    result['threat_score'],
         'blockchain_hash': result['hash'],
-        'timestamp':       result['timestamp']
+        'timestamp':       result['timestamp'],
+        'mitre_tactics':   mitre_str
     })
+    # Grab the ID of the just-inserted row
+    try:
+        import sqlite3 as _sq
+        _conn = _sq.connect('cyberdefense.db')
+        threat_id = _conn.execute('SELECT MAX(id) FROM threats').fetchone()[0]
+        _conn.close()
+    except Exception:
+        pass
+
+    log_audit(user.get('username'), 'SCAN',
+              f'{features.get("file_name","?")} → {result["prediction"]} ({result["threat_score"]})')
 
     if blockchain_log:
         try:
@@ -188,24 +276,153 @@ def predict_route():
             print(f"⚠️  Blockchain log failed: {e}")
 
     threshold = app.config.get('THREAT_THRESHOLD', 70)
-    if result['threat_score'] > threshold:
-        if EMAIL_AVAILABLE and send_high_threat_alert:
-            email_data = {**result, 'file_name': features.get('file_name', 'unknown')}
-            threading.Thread(
-                target=send_high_threat_alert,
-                args=(email_data,),
-                daemon=True
-            ).start()
+    if result['threat_score'] > 30:  # generate AI summary for MEDIUM and HIGH
+        full_data = {**result, 'file_name': features.get('file_name', 'unknown'), 'mitre_str': mitre_str}
 
-        socketio.emit('high_threat_alert', {
+        if result['threat_score'] > threshold:
+            if EMAIL_AVAILABLE and send_high_threat_alert:
+                threading.Thread(target=send_high_threat_alert, args=(full_data,), daemon=True).start()
+
+            if WEBHOOK_AVAILABLE and send_webhook_alert:
+                threading.Thread(target=send_webhook_alert, args=(full_data,), daemon=True).start()
+
+        if result['threat_score'] > threshold:
+            socketio.emit('high_threat_alert', {
+                'prediction':   result['prediction'],
+                'threat_score': result['threat_score'],
+                'risk_level':   result['risk_level'],
+                'timestamp':    result['timestamp']
+            })
+            print(f"🚨 HIGH THREAT ALERT — score: {result['threat_score']}")
+
+        # ── Emit file_scanned for every scan (populates SOC Live Feed) ───
+        socketio.emit('file_scanned', {
+            'file_name':    features.get('file_name', 'unknown'),
             'prediction':   result['prediction'],
             'threat_score': result['threat_score'],
             'risk_level':   result['risk_level'],
             'timestamp':    result['timestamp']
         })
-        print(f"🚨 HIGH THREAT ALERT — score: {result['threat_score']}")
+
+        # ── AI Incident Summary (async) ───────────────────
+        if threat_id:
+            def _gen_summary(tid, tdata):
+                try:
+                    from utils.chatbot import chat as ai_chat
+                    prompt = (
+                        f"Write a 3-sentence incident summary for a SOC analyst. "
+                        f"File: {tdata.get('file_name','unknown')}. "
+                        f"Prediction: {tdata['prediction']}. "
+                        f"Threat score: {tdata['threat_score']}. "
+                        f"MITRE tactics: {tdata.get('mitre_str','')}. "
+                        f"Keep it concise and professional."
+                    )
+                    summary = ai_chat(prompt, context={}, history=[])
+                    update_threat_summary(tid, summary)
+                except Exception as ex:
+                    print(f"⚠️  AI summary failed: {ex}")
+            threading.Thread(target=_gen_summary, args=(threat_id, full_data), daemon=True).start()
 
     return jsonify(result)
+
+
+# ═════════════════════════════════════════════════════════
+# PE FILE UPLOAD SCAN
+# ═════════════════════════════════════════════════════════
+
+@app.route('/api/upload-scan', methods=['POST'])
+def upload_scan():
+    user = verify_token(request)
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    f         = request.files['file']
+    file_name = f.filename or 'uploaded_file'
+    ext       = os.path.splitext(file_name)[1].lower()
+
+    # Save to temp file
+    suffix = ext if ext else '.bin'
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        f.save(tmp.name)
+        tmp_path = tmp.name
+
+    try:
+        from models.file_monitor import extract_pe_features
+        features = extract_pe_features(tmp_path)
+        if not features:
+            return jsonify({'error': 'Could not extract PE features from file'}), 422
+
+        features['file_name'] = file_name
+        result = predict(features)
+
+        hash_data = {
+            'prediction':   result['prediction'],
+            'threat_score': result['threat_score'],
+            'risk_level':   result['risk_level'],
+            'timestamp':    result['timestamp']
+        }
+        result['hash'] = hashlib.sha256(json.dumps(hash_data, sort_keys=True).encode()).hexdigest()
+
+        mitre_tactics = map_mitre(features, result['prediction'])
+        result['mitre_tactics'] = mitre_tactics
+        mitre_str = ', '.join(f"{t['id']} {t['name']}" for t in mitre_tactics)
+
+        save_threat({
+            'file_name':       file_name,
+            'features':        json.dumps(features),
+            'prediction':      result['prediction'],
+            'threat_score':    result['threat_score'],
+            'blockchain_hash': result['hash'],
+            'timestamp':       result['timestamp'],
+            'mitre_tactics':   mitre_str
+        })
+
+        log_audit(user.get('username'), 'UPLOAD_SCAN',
+                  f'{file_name} → {result["prediction"]} ({result["threat_score"]})')
+
+        if blockchain_log:
+            try:
+                bc_result = blockchain_log({
+                    'threat_score': result['threat_score'],
+                    'prediction':   result['prediction'],
+                    'hash':         result['hash'],
+                    'timestamp':    result['timestamp']
+                })
+                result['blockchain'] = {
+                    'mode':       bc_result.get('mode'),
+                    'tx_hash':    bc_result.get('tx_hash'),
+                    'block':      bc_result.get('block'),
+                    'explorer':   bc_result.get('explorer'),
+                    'alert_hash': bc_result.get('alert_hash')
+                }
+            except Exception:
+                pass
+
+        threshold = app.config.get('THREAT_THRESHOLD', 70)
+        if result['threat_score'] > threshold:
+            if EMAIL_AVAILABLE and send_high_threat_alert:
+                threading.Thread(target=send_high_threat_alert,
+                                 args=({**result, 'file_name': file_name},), daemon=True).start()
+            if WEBHOOK_AVAILABLE and send_webhook_alert:
+                threading.Thread(target=send_webhook_alert,
+                                 args=({**result, 'file_name': file_name},), daemon=True).start()
+            socketio.emit('high_threat_alert', {
+                'prediction':   result['prediction'],
+                'threat_score': result['threat_score'],
+                'risk_level':   result['risk_level'],
+                'timestamp':    result['timestamp']
+            })
+
+        return jsonify(result)
+
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 # ═════════════════════════════════════════════════════════
@@ -262,10 +479,43 @@ def generate_report_route():
     data     = request.get_json()
     filepath = generate_report(data)
     filename = os.path.basename(filepath)
+    log_audit(user.get('username'), 'REPORT_DOWNLOAD', filename)
     return send_file(
         filepath, as_attachment=True,
         download_name=filename, mimetype='application/pdf'
     )
+
+
+# ═════════════════════════════════════════════════════════
+# CSV EXPORT
+# ═════════════════════════════════════════════════════════
+
+@app.route('/api/threats/export/csv', methods=['GET'])
+def export_threats_csv():
+    user = verify_token(request)
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    from flask import Response
+    csv_data = get_threats_csv()
+    log_audit(user.get('username'), 'CSV_EXPORT', 'All threats exported')
+    return Response(
+        csv_data,
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename=threats_{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}.csv'}
+    )
+
+
+# ═════════════════════════════════════════════════════════
+# AUDIT LOG
+# ═════════════════════════════════════════════════════════
+
+@app.route('/api/audit-log', methods=['GET'])
+def get_audit_log_route():
+    user = verify_token(request)
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    limit = int(request.args.get('limit', 500))
+    return jsonify(get_audit_logs(limit))
 
 
 # ═════════════════════════════════════════════════════════
@@ -388,6 +638,8 @@ def admin_add_user():
         return jsonify({'error': 'Username and password required'}), 400
     if not create_user(username, password, role):
         return jsonify({'error': 'User already exists'}), 409
+    admin = verify_token(request)
+    log_audit(admin.get('username') if admin else 'admin', 'USER_CREATED', f'{username} ({role})')
     print(f"👤 Admin added user: {username} ({role})")
     return jsonify({'status': 'User created', 'username': username})
 
@@ -401,6 +653,8 @@ def admin_delete_user(username):
     if not get_user(username):
         return jsonify({'error': 'User not found'}), 404
     delete_user(username)
+    admin = verify_token(request)
+    log_audit(admin.get('username') if admin else 'admin', 'USER_DELETED', username)
     print(f"👤 Admin deleted user: {username}")
     return jsonify({'status': 'User deleted'})
 
@@ -416,6 +670,8 @@ def admin_change_password(username):
     if not get_user(username):
         return jsonify({'error': 'User not found'}), 404
     change_password(username, password)
+    admin = verify_token(request)
+    log_audit(admin.get('username') if admin else 'admin', 'PASSWORD_CHANGED', username)
     print(f"👤 Password changed for: {username}")
     return jsonify({'status': 'Password updated'})
 
@@ -448,6 +704,8 @@ def admin_clear_quarantine():
                     cleared += 1
                 except Exception:
                     pass
+    admin = verify_token(request)
+    log_audit(admin.get('username') if admin else 'admin', 'QUARANTINE_CLEARED', f'{cleared} files removed')
     print(f"🗑️  Quarantine cleared: {cleared} files")
     return jsonify({'status': f'Cleared {cleared} files'})
 
@@ -468,6 +726,8 @@ def admin_system_info():
         'python':           platform.python_version(),
         'blockchain_mode':  bc_logger.mode if bc_logger else 'unavailable',
         'email_enabled':    os.getenv('EMAIL_ENABLED', 'false'),
+        'webhook_enabled':  WEBHOOK_AVAILABLE,
+        'rate_limiting':    LIMITER_AVAILABLE,
         'quarantine_files': q_files,
         'blockchain_logs':  bc_logs,
         'users_count':      len(get_all_users()),
@@ -486,6 +746,8 @@ def admin_clear_threats():
         conn.execute('DELETE FROM threats')
         conn.commit()
         conn.close()
+        admin = verify_token(request)
+        log_audit(admin.get('username') if admin else 'admin', 'THREATS_CLEARED', 'All threat records deleted')
         print("🗑️  Threat database cleared")
         return jsonify({'status': 'Threat database cleared'})
     except Exception as e:
@@ -500,6 +762,8 @@ def admin_update_settings():
     threshold = data.get('threat_threshold')
     if threshold is not None:
         app.config['THREAT_THRESHOLD'] = int(threshold)
+        admin = verify_token(request)
+        log_audit(admin.get('username') if admin else 'admin', 'SETTINGS_CHANGED', f'threshold={threshold}')
         print(f"⚙️  Threat threshold updated: {threshold}")
     return jsonify({
         'status':    'Settings updated',
@@ -518,13 +782,60 @@ def chat_route():
         return jsonify({'error': 'Unauthorized'}), 401
 
     from utils.chatbot import chat as ai_chat
+    from utils.db import get_stats, get_all_threats, get_audit_logs, get_all_users
     body    = request.get_json()
     message = body.get('message', '').strip()
-    context = body.get('context', {})
     history = body.get('history', [])
 
     if not message:
         return jsonify({'error': 'Message required'}), 400
+
+    # ── Build rich live context server-side ───────────────
+    try:
+        db_stats   = get_stats()
+        db_threats = get_all_threats()
+        audit_logs = get_audit_logs(200)
+        all_users  = get_all_users()
+
+        # Failed login count (last 24 h worth)
+        failed_logins = sum(1 for e in audit_logs if e.get('action') == 'LOGIN_FAILED')
+        recent_logins = [e for e in audit_logs if e.get('action') in ('LOGIN_SUCCESS', 'LOGIN_FAILED')][:10]
+
+        # Quarantine info
+        quarantine_dir = os.path.join(os.path.dirname(__file__), 'quarantine')
+        q_log_path     = os.path.join(quarantine_dir, 'quarantine_log.json')
+        quarantine_log = []
+        if os.path.exists(q_log_path):
+            try:
+                with open(q_log_path) as _f:
+                    quarantine_log = json.load(_f)
+            except Exception:
+                pass
+        q_files = len([f for f in os.listdir(quarantine_dir)
+                       if f != 'quarantine_log.json']) if os.path.exists(quarantine_dir) else 0
+
+        # Recent audit events (non-login)
+        recent_audit = [e for e in audit_logs
+                        if e.get('action') not in ('LOGIN_SUCCESS', 'LOGIN_FAILED')][:10]
+
+        context = {
+            'stats':          db_stats,
+            'threats':        db_threats[:10],
+            'failed_logins':  failed_logins,
+            'recent_logins':  recent_logins,
+            'quarantine_count': q_files,
+            'quarantine_log': quarantine_log[:10],
+            'recent_audit':   recent_audit,
+            'users_count':    len(all_users),
+            'users':          all_users,
+            'blockchain_mode': bc_logger.mode if bc_logger else 'unavailable',
+            'threat_threshold': app.config.get('THREAT_THRESHOLD', 70),
+            'email_enabled':  EMAIL_AVAILABLE,
+            'current_user':   user.get('username'),
+            'current_role':   user.get('role'),
+        }
+    except Exception:
+        context = body.get('context', {})
 
     try:
         reply = ai_chat(message, context=context, history=history)
@@ -585,6 +896,9 @@ def start_file_monitor():
         observer.schedule(handler, WATCHED_DIR, recursive=False)
         observer.start()
         print(f"👁️  File monitor started: {WATCHED_DIR}")
+        # Scan files that were already in watched/ before the monitor started
+        from models.file_monitor import scan_existing_files
+        scan_existing_files()
         while True:
             time.sleep(1)
     except Exception as e:

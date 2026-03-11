@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { predict } from '../api'
+import { predict, uploadScan, exportThreatsCSV, getThreats } from '../api'
 import io from 'socket.io-client'
 
 const DEFAULTS = {
@@ -27,6 +27,8 @@ export default function Threats() {
   const [alerts,   setAlerts]   = useState([])
   const [wsStatus, setWsStatus] = useState('connecting')
   const [scanLog,  setScanLog]  = useState([])
+  const [uploadLoading, setUploadLoading] = useState(false)
+  const [threatHistory, setThreatHistory] = useState([])
 
   useEffect(() => {
     const socket = io('http://localhost:5000', {
@@ -52,6 +54,32 @@ export default function Threats() {
     })
     return () => socket.disconnect()
   }, [])
+
+  // Load threat history
+  useEffect(() => {
+    getThreats().then(r => setThreatHistory(r.data.slice(0, 8))).catch(() => {})
+  }, [result])
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploadLoading(true)
+    try {
+      const res = await uploadScan(file)
+      setResult(res.data)
+      setFileName(file.name)
+      setScanLog(prev => [{
+        time: new Date().toLocaleTimeString(),
+        msg:  `📤 Uploaded: ${file.name} → ${res.data.prediction} (${res.data.threat_score})`,
+        type: res.data.threat_score > 70 ? 'danger' : 'info'
+      }, ...prev].slice(0, 20))
+    } catch {
+      alert('Upload scan failed — is the backend running?')
+    } finally {
+      setUploadLoading(false)
+      e.target.value = ''
+    }
+  }
 
   const handlePredict = async () => {
     setLoading(true)
@@ -124,6 +152,10 @@ export default function Threats() {
           </div>
         </div>
         <div className="flex gap-3">
+          <button onClick={() => exportThreatsCSV()}
+            className="px-4 py-2 text-xs border border-green-400 text-green-400 rounded hover:bg-green-400 hover:text-black transition">
+            📥 EXPORT CSV
+          </button>
           <button onClick={sendTestAlert}
             className="px-4 py-2 text-xs border border-red-500 text-red-500 rounded hover:bg-red-500 hover:text-black transition">
             🚨 TEST ALERT
@@ -203,6 +235,20 @@ export default function Threats() {
             {loading && <div className="scan-line" />}
           </button>
 
+          {/* ── File Upload ─────────────────────────────── */}
+          <div className="mt-3">
+            <div className="text-xs text-gray-500 mb-2 tracking-widest">📤 OR UPLOAD REAL FILE</div>
+            <label className={`flex items-center justify-center gap-2 w-full py-3 rounded border-2 border-dashed cursor-pointer transition
+              ${uploadLoading ? 'border-gray-600 text-gray-600' : 'border-purple-500 text-purple-400 hover:border-purple-300 hover:text-purple-200'}`}>
+              {uploadLoading
+                ? <span className="flex items-center gap-2 text-xs"><span className="animate-spin">⟳</span> SCANNING...</span>
+                : <span className="text-xs font-bold tracking-widest">⬆ UPLOAD .EXE / .DLL / .SYS</span>}
+              <input type="file" className="hidden" accept=".exe,.dll,.sys,.bat,.ps1,.vbs,.js"
+                onChange={handleUpload} disabled={uploadLoading} />
+            </label>
+            <div className="text-xs text-gray-700 mt-1 text-center">Auto-extracts PE features & scans instantly</div>
+          </div>
+
           {/* Auto-scan info */}
           <div className="mt-4 bg-black rounded p-3 border border-gray-800">
             <div className="text-xs text-gray-400 mb-1 tracking-widest">👁️ AUTO-SCAN FOLDER</div>
@@ -276,6 +322,34 @@ export default function Threats() {
                 ))}
               </div>
 
+              {/* MITRE ATT&CK */}
+              {result.mitre_tactics?.length > 0 && (
+                <div className="bg-black rounded p-3">
+                  <div className="text-xs text-gray-400 mb-2 tracking-widest">🎯 MITRE ATT&CK MAPPING</div>
+                  {result.mitre_tactics.map((t, i) => (
+                    <div key={i} className="flex items-start gap-2 py-1 border-b border-gray-900">
+                      <a href={`https://attack.mitre.org/techniques/${t.id.replace('.', '/')}`}
+                        target="_blank" rel="noreferrer"
+                        className="text-xs text-purple-400 font-mono shrink-0 hover:text-purple-200 transition w-20">
+                        {t.id}
+                      </a>
+                      <div className="flex-1">
+                        <div className="text-xs text-white">{t.name}</div>
+                        <div className="text-xs text-gray-600">{t.tactic} — {t.reason}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* AI Incident Summary */}
+              {result.ai_summary && (
+                <div className="bg-black rounded p-3 border border-orange-900">
+                  <div className="text-xs text-orange-400 mb-2 tracking-widest">🤖 AI INCIDENT SUMMARY</div>
+                  <p className="text-xs text-gray-300 leading-relaxed">{result.ai_summary}</p>
+                </div>
+              )}
+
               {/* Blockchain */}
               <div className="bg-black rounded p-3">
                 <div className="text-xs text-gray-400 mb-2 tracking-widest">⛓ BLOCKCHAIN LOG</div>
@@ -336,7 +410,7 @@ export default function Threats() {
       </div>
 
       {/* Live Activity Log */}
-      <div className="glow-blue bg-gray-950 rounded-lg p-5">
+      <div className="glow-blue bg-gray-950 rounded-lg p-5 mb-6">
         <h2 className="neon-text-blue text-xs tracking-widest mb-3">
           📡 LIVE ACTIVITY LOG
           <span className="ml-2 text-gray-600 font-normal">({scanLog.length} events)</span>
@@ -355,6 +429,56 @@ export default function Threats() {
           ))}
         </div>
       </div>
+
+      {/* Recent Threats with AI Summaries */}
+      {threatHistory.length > 0 && (
+        <div className="glow-blue bg-gray-950 rounded-lg p-5">
+          <div className="flex justify-between items-center mb-3">
+            <h2 className="neon-text-blue text-xs tracking-widest">📋 RECENT THREAT LOG</h2>
+            <button onClick={() => exportThreatsCSV()}
+              className="text-xs border border-green-400 text-green-400 px-3 py-1 rounded hover:bg-green-400 hover:text-black transition">
+              📥 EXPORT CSV
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs font-mono border-collapse">
+              <thead>
+                <tr className="border-b border-gray-800">
+                  {['FILE', 'PREDICTION', 'SCORE', 'MITRE', 'AI SUMMARY', 'TIME'].map(h => (
+                    <th key={h} className="text-left py-2 px-3 text-gray-600 font-normal tracking-widest">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {threatHistory.map((t, i) => {
+                  const sc = t.threat_score > 70 ? 'text-red-400' : t.threat_score > 30 ? 'text-yellow-400' : 'text-green-400'
+                  const mitre = t.mitre_tactics ? t.mitre_tactics.split(',')[0]?.trim()?.split(' ')[0] : ''
+                  return (
+                    <tr key={i} className="border-b border-gray-900 hover:bg-gray-900 transition">
+                      <td className="py-2 px-3 text-gray-300 max-w-24 truncate">{t.file_name}</td>
+                      <td className={`py-2 px-3 font-bold ${sc}`}>{t.prediction}</td>
+                      <td className={`py-2 px-3 font-bold ${sc}`}>{t.threat_score?.toFixed(1)}</td>
+                      <td className="py-2 px-3">
+                        {mitre && (
+                          <a href={`https://attack.mitre.org/techniques/${mitre.replace('.','/')}`}
+                            target="_blank" rel="noreferrer"
+                            className="text-purple-400 hover:text-purple-200 transition">
+                            {mitre}
+                          </a>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-gray-500 max-w-xs truncate" title={t.ai_summary || ''}>
+                        {t.ai_summary ? t.ai_summary.slice(0, 60) + (t.ai_summary.length > 60 ? '…' : '') : '—'}
+                      </td>
+                      <td className="py-2 px-3 text-gray-700">{t.timestamp?.slice(0, 16).replace('T', ' ')}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
     </div>
   )

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { getStats, getThreats } from '../api'
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
 
 export default function Dashboard() {
   const [stats,   setStats]   = useState(null)
@@ -138,6 +138,12 @@ export default function Dashboard() {
             onMouseEnter={e => { e.target.style.background = '#ff8c00'; e.target.style.color = '#000' }}
             onMouseLeave={e => { e.target.style.background = 'transparent'; e.target.style.color = '#ff8c00' }}>
             🤖 AI CHAT
+          </Link>
+
+          <Link to="/audit" style={navBtn('#a78bfa')}
+            onMouseEnter={e => { e.target.style.background = '#a78bfa'; e.target.style.color = '#000' }}
+            onMouseLeave={e => { e.target.style.background = 'transparent'; e.target.style.color = '#a78bfa' }}>
+            📋 AUDIT LOG
           </Link>
 
           {/* ADMIN — only visible to admin role */}
@@ -282,8 +288,11 @@ export default function Dashboard() {
                         background: '#05051a',
                         border: '1px solid #00d4ff33',
                         fontFamily: 'monospace',
-                        fontSize: 11
+                        fontSize: 11,
+                        color: '#fff'
                       }}
+                      labelStyle={{ color: '#00d4ff', fontFamily: 'monospace', fontSize: 11 }}
+                      itemStyle={{ color: '#fff', fontFamily: 'monospace', fontSize: 11 }}
                       labelFormatter={() => 'Threat Score'}
                       formatter={(v) => [v.toFixed(1), 'Score']}
                     />
@@ -313,6 +322,83 @@ export default function Dashboard() {
             </div>
           )}
 
+          {/* ── Threat Heatmap Calendar ──────────────────── */}
+          {threats.length > 0 && (() => {
+            // Build day-count map for last 16 weeks (112 days)
+            const dayMap = {}
+            threats.forEach(t => {
+              const d = (t.timestamp || '').slice(0, 10)
+              if (d) dayMap[d] = (dayMap[d] || 0) + 1
+            })
+            const today = new Date()
+            const days = Array.from({ length: 112 }, (_, i) => {
+              const d = new Date(today)
+              d.setDate(today.getDate() - (111 - i))
+              return d.toISOString().slice(0, 10)
+            })
+            const weeks = []
+            for (let w = 0; w < 16; w++) weeks.push(days.slice(w * 7, w * 7 + 7))
+            const maxCount = Math.max(1, ...Object.values(dayMap))
+            const cellColor = (date) => {
+              const c = dayMap[date] || 0
+              if (c === 0) return '#0a0a1a'
+              const intensity = Math.min(1, c / maxCount)
+              if (intensity > 0.7) return '#ff003c'
+              if (intensity > 0.35) return '#ff8c00'
+              return '#00ff8866'
+            }
+            return (
+              <div style={{
+                background: '#05051a',
+                border: '1px solid #00d4ff22',
+                borderRadius: 10,
+                padding: 24,
+                marginBottom: 24
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                  <h2 style={{ color: '#00d4ff', fontFamily: 'monospace', fontSize: 12, letterSpacing: 3, margin: 0 }}>
+                    📅 DETECTION HEATMAP — LAST 16 WEEKS
+                  </h2>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', fontFamily: 'monospace', fontSize: 10, color: '#444' }}>
+                    <span>LOW</span>
+                    {['#00ff8866', '#ff8c00', '#ff003c'].map(c => (
+                      <span key={c} style={{ width: 10, height: 10, background: c, borderRadius: 2, display: 'inline-block' }} />
+                    ))}
+                    <span>HIGH</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 3 }}>
+                  {weeks.map((week, wi) => (
+                    <div key={wi} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {week.map(date => {
+                        const count = dayMap[date] || 0
+                        return (
+                          <div key={date}
+                            title={`${date}: ${count} detection${count !== 1 ? 's' : ''}`}
+                            style={{
+                              width: 13,
+                              height: 13,
+                              borderRadius: 2,
+                              background: cellColor(date),
+                              border: date === today.toISOString().slice(0, 10) ? '1px solid #00d4ff' : '1px solid transparent',
+                              cursor: count > 0 ? 'default' : 'default',
+                              transition: 'transform 0.1s'
+                            }}
+                            onMouseEnter={e => e.target.style.transform = 'scale(1.3)'}
+                            onMouseLeave={e => e.target.style.transform = 'scale(1)'}
+                          />
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginTop: 10, fontFamily: 'monospace', fontSize: 10, color: '#333' }}>
+                  {Object.values(dayMap).reduce((a, b) => a + b, 0)} total detections across {Object.keys(dayMap).length} active days
+                </div>
+              </div>
+            )
+          })()}
+
           {/* ── Recent Threats Table ─────────────────────── */}
           <div style={{
             background: '#05051a',
@@ -338,7 +424,7 @@ export default function Dashboard() {
               }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid #111' }}>
-                    {['FILE', 'PREDICTION', 'SCORE', 'TIMESTAMP', 'HASH'].map(h => (
+                    {['FILE', 'PREDICTION', 'SCORE', 'MITRE', 'AI SUMMARY', 'TIMESTAMP'].map(h => (
                       <th key={h} style={{
                         color: '#333',
                         textAlign: 'left',
@@ -354,7 +440,7 @@ export default function Dashboard() {
                 <tbody>
                   {threats.length === 0 ? (
                     <tr>
-                      <td colSpan={5} style={{
+                      <td colSpan={6} style={{
                         textAlign: 'center',
                         padding: 32,
                         color: '#333',
@@ -373,12 +459,14 @@ export default function Dashboard() {
                     const predColor =
                       t.prediction === 'Ransomware' ? '#ff003c' :
                       t.prediction === 'Suspicious'  ? '#ff8c00' : '#00ff88'
+                    let mitreTactics = []
+                    try { mitreTactics = JSON.parse(t.mitre_tactics || '[]') } catch {}
 
                     return (
                       <tr key={i} style={{ borderBottom: '1px solid #0a0a1a' }}
                         onMouseEnter={e => e.currentTarget.style.background = '#0d0d1a'}
                         onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                        <td style={{ padding: '10px 12px', color: '#ccc' }}>
+                        <td style={{ padding: '10px 12px', color: '#ccc', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {t.file_name}
                         </td>
                         <td style={{ padding: '10px 12px', color: predColor, fontWeight: 'bold' }}>
@@ -393,13 +481,20 @@ export default function Dashboard() {
                             {t.threat_score?.toFixed(1)}
                           </span>
                         </td>
+                        <td style={{ padding: '10px 12px' }}>
+                          {mitreTactics.slice(0, 2).map(m => (
+                            <a key={m.id} href={m.url} target="_blank" rel="noreferrer"
+                              style={{ display: 'block', color: '#a78bfa', fontSize: 10, textDecoration: 'none' }}
+                              title={m.name}>
+                              {m.id}
+                            </a>
+                          ))}
+                        </td>
+                        <td style={{ padding: '10px 12px', color: '#888', fontSize: 10, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {t.ai_summary ? t.ai_summary.slice(0, 60) + (t.ai_summary.length > 60 ? '…' : '') : <span style={{ color: '#333' }}>—</span>}
+                        </td>
                         <td style={{ padding: '10px 12px', color: '#444' }}>
                           {t.timestamp?.slice(0, 19).replace('T', ' ')}
-                        </td>
-                        <td style={{ padding: '10px 12px', color: '#2a2a3a', fontSize: 10 }}>
-                          {t.blockchain_hash
-                            ? t.blockchain_hash.slice(0, 14) + '...'
-                            : '—'}
                         </td>
                       </tr>
                     )

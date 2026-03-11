@@ -121,16 +121,22 @@ class BlockchainLogger:
             if not private_key.startswith('0x'):
                 private_key = '0x' + private_key
 
-            # Check if already logged
+            # Check if already logged — use multiple methods for reliability
+            already_exists = False
             try:
-                already_exists = self.contract.functions.verifyHash(alert_hash).call()
-                if already_exists:
-                    print(f"ℹ️  Hash already on-chain: {alert_hash[:20]}...")
-                    return self._build_result(
-                        alert_hash, prediction, threat_score, None, None
-                    )
-            except:
-                pass
+                already_exists = self.contract.functions.verifyHash(alert_hash).call(timeout=10)
+            except Exception as ve:
+                # verifyHash failed (network/timeout) — try the public mapping getter
+                try:
+                    already_exists = self.contract.functions.hashExists(alert_hash).call(timeout=10)
+                except Exception:
+                    # Both checks failed — skip TX to avoid on-chain revert
+                    print(f"⚠️  Could not verify hash on-chain ({ve}) — skipping TX, logging locally")
+                    return self._log_locally(alert_hash, prediction, threat_score)
+
+            if already_exists:
+                print(f"ℹ️  Hash already on-chain: {alert_hash[:20]}... — skipping TX")
+                return self._build_result(alert_hash, prediction, threat_score, None, None)
 
             nonce     = self.w3.eth.get_transaction_count(self.account.address)
             gas_price = self.w3.eth.gas_price
@@ -154,6 +160,12 @@ class BlockchainLogger:
 
             tx_hex = receipt.transactionHash.hex()
             block  = receipt.blockNumber
+
+            # Check if the transaction actually succeeded on-chain
+            if receipt.status == 0:
+                print(f"⚠️  TX reverted on-chain: {tx_hex[:20]}... — logging locally")
+                return self._log_locally(alert_hash, prediction, threat_score)
+
             result = self._build_result(alert_hash, prediction, threat_score, tx_hex, block)
 
             print(f"⛓  Logged on Core Testnet2!")
