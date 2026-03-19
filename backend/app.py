@@ -909,9 +909,89 @@ monitor_thread.start()
 
 
 # ═════════════════════════════════════════════════════════
+# NETWORK MONITOR
+# ═════════════════════════════════════════════════════════
+
+def start_network_monitor():
+    try:
+        from models.network_monitor import NetworkMonitor, set_monitor
+        nm = NetworkMonitor(socketio, blockchain_log, send_high_threat_alert)
+        set_monitor(nm)
+        nm.start()
+    except Exception as e:
+        print(f"⚠️  Network monitor failed: {e}")
+
+network_thread = threading.Thread(target=start_network_monitor, daemon=True)
+network_thread.start()
+
+
+@app.route('/api/network/connections')
+@limiter.limit("30 per minute")
+def network_connections():
+    if not verify_token(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    from models.network_monitor import get_monitor
+    m = get_monitor()
+    if m is None:
+        return jsonify({'connections': [], 'error': 'Monitor not ready'})
+    return jsonify({'connections': m.get_connections()})
+
+
+@app.route('/api/network/stats')
+@limiter.limit("30 per minute")
+def network_stats():
+    if not verify_token(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    from models.network_monitor import get_monitor
+    m = get_monitor()
+    if m is None:
+        return jsonify({'total_connections': 0, 'suspicious_ips': 0,
+                        'alerts_today': 0, 'bytes_sent_mb': 0})
+    return jsonify(m.get_stats())
+
+
+@app.route('/api/network/alerts')
+@limiter.limit("30 per minute")
+def network_alerts():
+    if not verify_token(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    from models.network_monitor import get_monitor
+    m = get_monitor()
+    if m is None:
+        return jsonify({'alerts': []})
+    return jsonify({'alerts': m.get_alerts()})
+
+
+@app.route('/api/network/packets')
+@limiter.limit("30 per minute")
+def network_packets():
+    if not verify_token(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    from models.network_monitor import get_monitor
+    m = get_monitor()
+    if m is None:
+        return jsonify({'packets': []})
+    return jsonify({'packets': m.get_packets()})
+
+
+@app.route('/api/network/audit-log')
+@limiter.limit("30 per minute")
+def network_audit_log_route():
+    if not verify_token(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    from utils.db import get_network_audit_logs
+    limit = min(int(request.args.get('limit', 500)), 1000)
+    return jsonify(get_network_audit_logs(limit))
+
+
+# ═════════════════════════════════════════════════════════
 # RUN
 # ═════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
+    import socket as _socket
+    _s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    _s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    _s.close()
     print("🛡️  CyberDefense Backend starting on http://localhost:5000")
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)

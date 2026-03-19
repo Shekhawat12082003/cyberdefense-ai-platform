@@ -12,6 +12,8 @@ export const getThreats = ()  => axios.get(`${BASE}/threats`, { headers: getHead
 export const getSHAP    = ()  => axios.get(`${BASE}/shap`,    { headers: getHeaders() })
 export const predict    = (f) => axios.post(`${BASE}/predict`, { features: f }, { headers: getHeaders() })
 export const getAuditLogs = () => axios.get(`${BASE}/audit-log`, { headers: getHeaders() })
+export const getNetworkAuditLogs = (limit = 500) =>
+  axios.get(`${BASE}/network/audit-log`, { params: { limit }, headers: getHeaders() })
 
 export const uploadScan = (file) => {
   const form = new FormData()

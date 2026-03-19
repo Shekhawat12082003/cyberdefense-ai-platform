@@ -54,6 +54,19 @@ def init_db():
             details   TEXT
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS network_audit_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp   TEXT,
+            event_type  TEXT,
+            ip          TEXT,
+            severity    TEXT,
+            protocol    TEXT,
+            port        INTEGER,
+            description TEXT,
+            details     TEXT
+        )
+    ''')
     # Seed default users if table is empty
     c.execute('SELECT COUNT(*) FROM users')
     if c.fetchone()[0] == 0:
@@ -228,6 +241,57 @@ def get_audit_logs(limit: int = 500):
     rows = c.fetchall()
     conn.close()
     return [{'id': r[0], 'timestamp': r[1], 'username': r[2], 'action': r[3], 'details': r[4]} for r in rows]
+
+
+# ── Network Audit Log ──────────────────────────────────────
+
+def log_network_audit(event_type: str, ip: str, severity: str,
+                      description: str, protocol: str = '', port: int = None,
+                      details: str = ''):
+    ts = datetime.utcnow().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        'INSERT INTO network_audit_log '
+        '(timestamp, event_type, ip, severity, protocol, port, description, details) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        (ts, event_type, ip, severity, protocol, port, description, details)
+    )
+    conn.commit()
+    conn.close()
+    try:
+        from flask import current_app
+        socketio = current_app.extensions.get('socketio')
+        if socketio:
+            socketio.emit('network_audit_event', {
+                'timestamp':   ts,
+                'event_type':  event_type,
+                'ip':          ip,
+                'severity':    severity,
+                'protocol':    protocol,
+                'port':        port,
+                'description': description,
+                'details':     details,
+            })
+    except Exception:
+        pass
+
+
+def get_network_audit_logs(limit: int = 500):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        'SELECT id, timestamp, event_type, ip, severity, protocol, port, description, details '
+        'FROM network_audit_log ORDER BY id DESC LIMIT ?',
+        (limit,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {'id': r[0], 'timestamp': r[1], 'event_type': r[2], 'ip': r[3],
+         'severity': r[4], 'protocol': r[5], 'port': r[6],
+         'description': r[7], 'details': r[8]}
+        for r in rows
+    ]
 
 
 def get_stats():

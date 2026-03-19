@@ -10,6 +10,7 @@ import Admin      from './pages/Admin'
 import SOC        from './pages/SOC'
 import Chatbot    from './pages/Chatbot'
 import AuditLog   from './pages/AuditLog'
+import Network    from './pages/Network'
 
 // ══════════════════════════════════════════════════════════
 // TOKEN CHECK HOOK
@@ -197,6 +198,11 @@ export default function App() {
         {/* Audit Log — any logged in user */}
         <Route path="/audit" element={
           <PrivateRoute><AuditLog /></PrivateRoute>
+        } />
+
+        {/* Network Traffic Analyser */}
+        <Route path="/network" element={
+          <PrivateRoute><Network /></PrivateRoute>
         } />
 
         {/* Catch all unknown routes */}

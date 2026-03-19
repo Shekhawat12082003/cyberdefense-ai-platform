@@ -124,11 +124,11 @@ class BlockchainLogger:
             # Check if already logged — use multiple methods for reliability
             already_exists = False
             try:
-                already_exists = self.contract.functions.verifyHash(alert_hash).call(timeout=10)
+                already_exists = self.contract.functions.verifyHash(alert_hash).call()
             except Exception as ve:
                 # verifyHash failed (network/timeout) — try the public mapping getter
                 try:
-                    already_exists = self.contract.functions.hashExists(alert_hash).call(timeout=10)
+                    already_exists = self.contract.functions.hashExists(alert_hash).call()
                 except Exception:
                     # Both checks failed — skip TX to avoid on-chain revert
                     print(f"⚠️  Could not verify hash on-chain ({ve}) — skipping TX, logging locally")

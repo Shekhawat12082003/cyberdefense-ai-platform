@@ -146,6 +146,12 @@ export default function Dashboard() {
             📋 AUDIT LOG
           </Link>
 
+          <Link to="/network" style={navBtn('#00ff88')}
+            onMouseEnter={e => { e.target.style.background = '#00ff88'; e.target.style.color = '#000' }}
+            onMouseLeave={e => { e.target.style.background = 'transparent'; e.target.style.color = '#00ff88' }}>
+            🌐 NETWORK
+          </Link>
+
           {/* ADMIN — only visible to admin role */}
           {isAdmin && (
             <Link to="/admin" style={navBtn('#ff003c')}
